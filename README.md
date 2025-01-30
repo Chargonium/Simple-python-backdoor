@@ -2,7 +2,9 @@
 it supports multiple connections; And is better than pysilon because it doesnt expose your discord token. So the outside people.
 
 ## Todo:
-- [ ] Make it so the server remembers sessions based on hwid
+- [x] Make it so the server remembers sessions based on hwid
+- [ ] Add user identification by getting the discord token
+- [ ] validate tokens periodically
 
 Credits:
 - Chargonium
